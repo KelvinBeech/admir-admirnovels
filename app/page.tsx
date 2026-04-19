@@ -63,8 +63,10 @@ function getFallbackRecommendation(ambition: string, pageTarget: string, chapter
   };
 }
 
-function getRecommendationFromItem(item: FastTrackItem | null) {
-  if (!item) return null;
+function getPromptWeightFromItem(item: FastTrackItem | null) {
+  if (!item) {
+    return { premiumBoost: 0, balancedBoost: 0 };
+  }
 
   const raw = `${item.title}\n${item.summary}\n${item.whyNow}\n${item.brief?.rawPrompt || ""}`.toLowerCase();
   const longSignals = ["novel", "long", "book", "chapter", "fiction", "manuscript"];
@@ -73,23 +75,59 @@ function getRecommendationFromItem(item: FastTrackItem | null) {
   const longScore = longSignals.filter((signal) => raw.includes(signal)).length;
   const mediumScore = mediumSignals.filter((signal) => raw.includes(signal)).length;
 
-  if (longScore >= 2) {
+  return {
+    premiumBoost: longScore >= 2 ? 1 : 0,
+    balancedBoost: mediumScore >= 1 ? 1 : 0,
+  };
+}
+
+function getRecommendation(
+  ambition: string,
+  pageTarget: string,
+  chapterTarget: string,
+  item: FastTrackItem | null,
+) {
+  const ambitious = ambition === "As strong as possible";
+  const substantial = ambition === "Rich and substantial";
+  const longBook = pageTarget === "220 pages" || chapterTarget === "18 chapters";
+  const mediumBook = pageTarget === "120 pages" || chapterTarget === "12 chapters";
+  const promptWeight = getPromptWeightFromItem(item);
+
+  const premiumScore =
+    (ambitious ? 2 : 0) +
+    (longBook ? 2 : 0) +
+    (substantial ? 1 : 0) +
+    promptWeight.premiumBoost;
+
+  const balancedScore =
+    (substantial ? 2 : 0) +
+    (mediumBook ? 2 : 0) +
+    (ambitious ? 0 : 1) +
+    promptWeight.balancedBoost;
+
+  if (premiumScore >= balancedScore && premiumScore >= 2) {
     return {
       ...jadeWritingRoutes.Premium,
-      reason: "The latest Fast Track item reads like a substantial novel brief, so Jade recommends the strongest route for quality and long-form consistency.",
+      reason: item
+        ? "Based on this Fast Track brief and your selected project shape, Jade recommends the strongest route for quality and long-form consistency."
+        : "This project looks ambitious enough that stronger writing quality and longer-form consistency are worth the extra time and cost.",
     };
   }
 
-  if (mediumScore >= 1) {
+  if (balancedScore >= 2) {
     return {
       ...jadeWritingRoutes.Balanced,
-      reason: "The latest Fast Track item looks narrative-heavy, but not necessarily premium-only, so Jade recommends a balanced route.",
+      reason: item
+        ? "Based on this Fast Track brief and your selected project shape, Jade recommends a balanced route with solid quality without pushing as hard on time and cost."
+        : "This looks like a meaningful novel project, but not necessarily one that needs the heaviest premium route.",
     };
   }
 
   return {
     ...jadeWritingRoutes.Fast,
-    reason: "The latest Fast Track item looks light enough that Jade can start quickly on a fast route.",
+    reason: item
+      ? "Based on this Fast Track brief and your selected project shape, Jade can move quickly with a lighter, faster route."
+      : "This looks light enough that speed and momentum are probably more valuable than premium-level polish on the first pass.",
   };
 }
 
@@ -117,12 +155,10 @@ export default function Home() {
     })();
   }, []);
 
-  const fallbackRecommendation = useMemo(
-    () => getFallbackRecommendation(ambition, pageTarget, chapterTarget),
-    [ambition, pageTarget, chapterTarget],
+  const recommendation = useMemo(
+    () => getRecommendation(ambition, pageTarget, chapterTarget, item),
+    [ambition, pageTarget, chapterTarget, item],
   );
-  const liveRecommendation = getRecommendationFromItem(item);
-  const recommendation = liveRecommendation || fallbackRecommendation;
   const chapterCount = item?.production?.outputs?.manuscriptChapters?.length || 0;
   const hasPdf = Boolean(item?.production?.artifacts?.pdfUrl);
   const sourcePrompt = item?.brief?.rawPrompt || "No live Fast Track item loaded yet. Use the questions on the right to shape Jade’s recommendation until Firebase is connected.";

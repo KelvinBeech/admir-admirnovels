@@ -24,6 +24,8 @@
 # misc
 .DS_Store
 *.pem
+*.swp
+/public/generated/
 
 # debug
 npm-debug.log*

@@ -23,6 +23,22 @@ type FastTrackItem = {
     mode?: string;
     status?: string;
     leadAgent?: string;
+    startedAt?: string;
+    updatedAt?: string;
+    currentRunId?: string;
+    summary?: string;
+    runs?: Array<{
+      runId: string;
+      status: "active" | "complete" | "failed";
+      startedAt: string;
+      completedAt?: string;
+      durationMs?: number;
+      title?: string;
+      summary?: string;
+      pdfUrl?: string;
+      chapterCount?: number;
+      error?: string;
+    }>;
     artifacts?: {
       pdfUrl?: string;
       generatedAt?: string;
@@ -33,35 +49,51 @@ type FastTrackItem = {
   };
 };
 
+function formatTimestamp(value?: string) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatDurationMs(durationMs?: number) {
+  if (!durationMs || durationMs <= 0) return null;
+  const totalSeconds = Math.round(durationMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function formatDuration(startedAt?: string, endedAt?: string) {
+  if (!startedAt || !endedAt) return null;
+  const start = new Date(startedAt).getTime();
+  const end = new Date(endedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+
+  const totalSeconds = Math.round((end - start) / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
 const ambitionOptions = ["Clean and simple", "Rich and substantial", "As strong as possible"];
 const pageTargets = ["60 pages", "120 pages", "220 pages"];
 const chapterTargets = ["6 chapters", "12 chapters", "18 chapters"];
-
-function getFallbackRecommendation(ambition: string, pageTarget: string, chapterTarget: string) {
-  const ambitious = ambition === "As strong as possible";
-  const substantial = ambition === "Rich and substantial";
-  const longBook = pageTarget === "220 pages" || chapterTarget === "18 chapters";
-  const mediumBook = pageTarget === "120 pages" || chapterTarget === "12 chapters";
-
-  if (ambitious || longBook) {
-    return {
-      ...jadeWritingRoutes.Premium,
-      reason: "This project looks ambitious enough that stronger writing quality and longer-form consistency are worth the extra time and cost.",
-    };
-  }
-
-  if (substantial || mediumBook) {
-    return {
-      ...jadeWritingRoutes.Balanced,
-      reason: "This looks like a meaningful novel project, but not necessarily one that needs the heaviest premium route.",
-    };
-  }
-
-  return {
-    ...jadeWritingRoutes.Fast,
-    reason: "This looks light enough that speed and momentum are probably more valuable than premium-level polish on the first pass.",
-  };
-}
 
 function getPromptWeightFromItem(item: FastTrackItem | null) {
   if (!item) {
@@ -102,8 +134,10 @@ function getRecommendation(
   const balancedScore =
     (substantial ? 2 : 0) +
     (mediumBook ? 2 : 0) +
-    (ambitious ? 0 : 1) +
     promptWeight.balancedBoost;
+
+  const fastEligible = !ambitious && !substantial && !longBook && !mediumBook && !item;
+  const fastWithPromptEligible = !ambitious && !substantial && pageTarget === "60 pages" && chapterTarget === "6 chapters" && promptWeight.premiumBoost === 0;
 
   if (premiumScore >= balancedScore && premiumScore >= 2) {
     return {
@@ -111,6 +145,15 @@ function getRecommendation(
       reason: item
         ? "Based on this Fast Track brief and your selected project shape, Jade recommends the strongest route for quality and long-form consistency."
         : "This project looks ambitious enough that stronger writing quality and longer-form consistency are worth the extra time and cost.",
+    };
+  }
+
+  if (fastEligible || fastWithPromptEligible) {
+    return {
+      ...jadeWritingRoutes.Fast,
+      reason: item
+        ? "Based on this Fast Track brief and your selected project shape, Jade can move quickly with a lighter, faster route."
+        : "This looks light enough that speed and momentum are probably more valuable than premium-level polish on the first pass.",
     };
   }
 
@@ -138,22 +181,75 @@ export default function Home() {
   const [ambition, setAmbition] = useState("As strong as possible");
   const [pageTarget, setPageTarget] = useState("120 pages");
   const [chapterTarget, setChapterTarget] = useState("12 chapters");
+  const [generating, setGenerating] = useState(false);
+  const [generationMessage, setGenerationMessage] = useState<string | null>(null);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+
+  async function loadLatestItem() {
+    try {
+      setError(null);
+      const res = await fetch("/api/fast-track/latest", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `Fast Track API error: ${res.status}`);
+      setItem(data.item || null);
+    } catch (err) {
+      console.error("Failed to load latest Fast Track item", err);
+      setError(err instanceof Error ? err.message : "Failed to load latest Fast Track item.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/fast-track/latest", { cache: "no-store" });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || `Fast Track API error: ${res.status}`);
-        setItem(data.item || null);
-      } catch (err) {
-        console.error("Failed to load latest Fast Track item", err);
-        setError(err instanceof Error ? err.message : "Failed to load latest Fast Track item.");
-      } finally {
-        setLoading(false);
-      }
-    })();
+    void loadLatestItem();
   }, []);
+
+  async function handleMakeNovel() {
+    try {
+      setGenerating(true);
+      setGenerationMessage(item?.production?.artifacts?.pdfUrl ? "Starting a fresh regeneration run…" : "Generating the novel draft and PDF now…");
+      setError(null);
+
+      const res = await fetch("/api/novel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId: item?.itemId || null }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `Novel API error: ${res.status}`);
+
+      setItem(data.item || null);
+      setGenerationMessage("Novel run finished.");
+      await loadLatestItem();
+    } catch (err) {
+      console.error("Failed to generate novel", err);
+      setError(err instanceof Error ? err.message : "Failed to generate novel.");
+      setGenerationMessage(null);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function handleDeleteRunPdf(runId: string) {
+    try {
+      setDeletingRunId(runId);
+      setError(null);
+      const res = await fetch("/api/novel/run", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId: item?.itemId, runId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `Delete run API error: ${res.status}`);
+      setItem(data.item || null);
+      await loadLatestItem();
+    } catch (err) {
+      console.error("Failed to delete run PDF", err);
+      setError(err instanceof Error ? err.message : "Failed to delete run PDF.");
+    } finally {
+      setDeletingRunId(null);
+    }
+  }
 
   const recommendation = useMemo(
     () => getRecommendation(ambition, pageTarget, chapterTarget, item),
@@ -161,6 +257,11 @@ export default function Home() {
   );
   const chapterCount = item?.production?.outputs?.manuscriptChapters?.length || 0;
   const hasPdf = Boolean(item?.production?.artifacts?.pdfUrl);
+  const productionStatus = item?.production?.status || "idle";
+  const latestRun = item?.production?.runs?.[0];
+  const runDuration = latestRun?.durationMs
+    ? formatDurationMs(latestRun.durationMs)
+    : formatDuration(item?.production?.startedAt, item?.production?.artifacts?.generatedAt || item?.production?.updatedAt);
   const sourcePrompt = item?.brief?.rawPrompt || "No live Fast Track item loaded yet. Use the questions on the right to shape Jade’s recommendation until Firebase is connected.";
 
   return (
@@ -206,7 +307,7 @@ export default function Home() {
               </div>
             ) : null}
 
-            <div className="mt-8 rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
+            <div data-prompt-source className="mt-8 rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.22em] text-fuchsia-200/75">Prompt source</div>
@@ -262,24 +363,97 @@ export default function Home() {
               </div>
 
               <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                <MetricCard label="Draft status" value={item?.production?.status || "Not started"} />
+                <MetricCard label="Draft status" value={productionStatus} />
                 <MetricCard label="Chapter count" value={String(chapterCount)} />
                 <MetricCard label="Novel PDF" value={hasPdf ? "Ready" : "Not ready"} />
                 <MetricCard label="Lead agent" value={item?.production?.leadAgent || "Jade"} />
+                <MetricCard label="Run time" value={runDuration || "Not available yet"} />
+                <MetricCard label="Updated" value={formatTimestamp(item?.production?.artifacts?.generatedAt || item?.production?.updatedAt) || item?.production?.artifacts?.generatedAt || item?.production?.updatedAt || "Not available yet"} />
               </div>
 
               <div className="mt-6 rounded-2xl border border-sky-400/20 bg-sky-500/10 p-4 text-sm leading-6 text-sky-50/90">
                 This page should never collapse into a dead shell again. If Firebase is unavailable, the recommendation builder still works and the user can keep moving.
               </div>
 
+              {(generationMessage || item?.production?.summary) ? (
+                <div className="mt-6 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-50/90">
+                  {generating ? generationMessage : item?.production?.summary || generationMessage}
+                </div>
+              ) : null}
+
               <div className="mt-6 flex flex-wrap gap-3">
-                <button className="rounded-full bg-fuchsia-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-fuchsia-400">
-                  Make the novel
+                <button
+                  type="button"
+                  onClick={() => void handleMakeNovel()}
+                  disabled={generating || loading || productionStatus === "active"}
+                  className="rounded-full bg-fuchsia-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-fuchsia-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {generating || productionStatus === "active"
+                    ? "Making the novel…"
+                    : hasPdf
+                      ? "Regenerate novel"
+                      : "Make the novel"}
                 </button>
-                <button className="rounded-full border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white/90 transition hover:bg-white/10">
+                <button
+                  type="button"
+                  onClick={() => void loadLatestItem()}
+                  className="rounded-full border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white/90 transition hover:bg-white/10"
+                >
+                  Refresh status
+                </button>
+                <button
+                  type="button"
+                  onClick={() => document.querySelector('[data-prompt-source]')?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                  className="rounded-full border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white/90 transition hover:bg-white/10"
+                >
                   View prompt source
                 </button>
               </div>
+
+              {item?.production?.runs?.filter((run) => run.pdfUrl).length ? (
+                <div className="mt-6 rounded-2xl border border-white/8 bg-white/5 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-white/45">Recent runs</div>
+                  <div className="mt-4 space-y-3">
+                    {item.production.runs.filter((run) => run.pdfUrl).map((run) => (
+                      <div key={run.runId} className="rounded-2xl border border-white/8 bg-[#171222] p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-white">{run.title || item?.brief?.projectName || item?.title || "Novel run"}</div>
+                            <div className="mt-1 text-xs text-white/50">
+                              {run.status === "complete" ? "Complete" : run.status === "failed" ? "Failed" : "Active"}
+                              {item?.brief?.projectName || item?.title ? ` • Source: ${item?.brief?.projectName || item?.title}` : ""}
+                            </div>
+                          </div>
+                          <div className="text-xs text-white/45">{formatTimestamp(run.startedAt) || run.startedAt}</div>
+                        </div>
+                        <div className="mt-2 text-sm leading-6 text-white/70">{run.summary || "No run summary available."}</div>
+                        <div className="mt-3 flex flex-wrap gap-3 text-xs text-white/55">
+                          <span>Started: {formatTimestamp(run.startedAt) || run.startedAt}</span>
+                          <span>Finished: {formatTimestamp(run.completedAt) || "Not finished yet"}</span>
+                          <span>Duration: {formatDurationMs(run.durationMs) || "Not available yet"}</span>
+                          <span>Chapters: {typeof run.chapterCount === "number" ? String(run.chapterCount) : "-"}</span>
+                        </div>
+                        {run.pdfUrl ? (
+                          <div className="mt-3 flex flex-wrap gap-3">
+                            <a href={run.pdfUrl} target="_blank" rel="noreferrer" className="text-sm font-medium text-emerald-300 hover:text-emerald-200">
+                              Open PDF from this run
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteRunPdf(run.runId)}
+                              disabled={deletingRunId === run.runId}
+                              className="text-sm font-medium text-rose-300 hover:text-rose-200 disabled:opacity-50"
+                            >
+                              {deletingRunId === run.runId ? "Deleting PDF…" : "Delete PDF"}
+                            </button>
+                          </div>
+                        ) : null}
+                        {run.error ? <div className="mt-3 text-sm text-rose-200">{run.error}</div> : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </section>

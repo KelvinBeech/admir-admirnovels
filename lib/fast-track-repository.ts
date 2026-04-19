@@ -15,6 +15,19 @@ export interface FastTrackBrief {
   updatedAt?: string;
 }
 
+export interface NarrativeRunRecord {
+  runId: string;
+  status: "active" | "complete" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  title?: string;
+  summary?: string;
+  pdfUrl?: string;
+  chapterCount?: number;
+  error?: string;
+}
+
 export interface ProductionRun {
   mode?: "narrative" | "build" | "media" | "general";
   status?: "idle" | "starting" | "active" | "blocked" | "complete";
@@ -24,14 +37,26 @@ export interface ProductionRun {
   updatedAt?: string;
   summary?: string;
   seedPrompt?: string;
+  currentRunId?: string;
+  runs?: NarrativeRunRecord[];
   artifacts?: {
     mode?: string;
     pdfUrl?: string;
     generatedAt?: string;
   };
   outputs?: {
+    narrativeDraft?: string;
     manuscriptDraft?: string;
     manuscriptChapters?: string[];
+    storyBible?: string;
+    storyContinuity?: string;
+    storyState?: {
+      characters?: string[];
+      setting?: string;
+      activeTensions?: string[];
+      unresolvedThreads?: string[];
+      currentNarrativeTarget?: string;
+    };
   };
 }
 
@@ -83,4 +108,29 @@ export async function getLatestNarrativeFastTrackItem(): Promise<FastTrackItem |
     );
   });
   return relevant || null;
+}
+
+export async function getFastTrackItem(itemId: string): Promise<FastTrackItem | null> {
+  const db = getFirestore();
+  const snapshot = await db.collection(FAST_TRACK_COLLECTION).doc(itemId).get();
+  if (!snapshot.exists) return null;
+  return mapFastTrack(snapshot);
+}
+
+export async function updateFastTrackProduction(itemId: string, production: ProductionRun): Promise<FastTrackItem | null> {
+  const db = getFirestore();
+  const ref = db.collection(FAST_TRACK_COLLECTION).doc(itemId);
+  await ref.set({ production: { ...production, updatedAt: new Date().toISOString() } }, { merge: true });
+  const snapshot = await ref.get();
+  if (!snapshot.exists) return null;
+  return mapFastTrack(snapshot);
+}
+
+export async function updateFastTrackArtifacts(itemId: string, artifacts: NonNullable<ProductionRun["artifacts"]>): Promise<FastTrackItem | null> {
+  const db = getFirestore();
+  const ref = db.collection(FAST_TRACK_COLLECTION).doc(itemId);
+  await ref.set({ production: { artifacts: { ...artifacts, generatedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() } }, { merge: true });
+  const snapshot = await ref.get();
+  if (!snapshot.exists) return null;
+  return mapFastTrack(snapshot);
 }
